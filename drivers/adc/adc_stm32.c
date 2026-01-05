@@ -255,28 +255,21 @@ static void adc_stm32_enable_dma_support(ADC_TypeDef *adc)
 #endif
 }
 
-static int adc_stm32_dma_start(const struct device *dev,
-			       void *buffer, size_t channel_count)
+static int adc_stm32_dma_init(const struct device *dev)
 {
 	const struct adc_stm32_cfg *config = dev->config;
 	ADC_TypeDef *adc = config->base;
 	struct adc_stm32_data *data = dev->data;
-	struct dma_block_config *blk_cfg;
-	int ret;
-
+	struct dma_block_config *blk_cfg = &data->dma.dma_blk_cfg;
 	struct stream *dma = &data->dma;
 
-	blk_cfg = &dma->dma_blk_cfg;
-
-	/* prepare the block */
-	blk_cfg->block_size = channel_count * sizeof(adc_data_size_t);
+	blk_cfg->block_size = 0;
 
 	/* Source and destination */
 	blk_cfg->source_address = (uint32_t)LL_ADC_DMA_GetRegAddr(adc, LL_ADC_DMA_REG_REGULAR_DATA);
 	blk_cfg->source_addr_adj = DMA_ADDR_ADJ_NO_CHANGE;
 	blk_cfg->source_reload_en = 0;
-
-	blk_cfg->dest_address = (uint32_t)buffer;
+	blk_cfg->dest_address = 0;
 	blk_cfg->dest_addr_adj = DMA_ADDR_ADJ_INCREMENT;
 	blk_cfg->dest_reload_en = 0;
 
@@ -289,25 +282,30 @@ static int adc_stm32_dma_start(const struct device *dev,
 	dma->dma_cfg.head_block = blk_cfg;
 	dma->dma_cfg.user_data = data;
 
-	ret = dma_config(data->dma.dma_dev, data->dma.channel,
-			 &dma->dma_cfg);
+	return dma_config(dma->dma_dev, dma->channel, &dma->dma_cfg);
+}
+
+static int adc_stm32_dma_start(const struct device *dev, void *buffer, size_t channel_count)
+{
+	const struct adc_stm32_cfg *config = dev->config;
+	ADC_TypeDef *adc = config->base;
+	struct adc_stm32_data *data = dev->data;
+	int ret;
+
+	adc_stm32_enable_dma_support(adc);
+
+	data->dma_error = 0;
+
+	ret = dma_reload(data->dma.dma_dev, data->dma.channel,
+			 (uint32_t)LL_ADC_DMA_GetRegAddr(adc, LL_ADC_DMA_REG_REGULAR_DATA),
+			 (uint32_t)buffer, channel_count * sizeof(adc_data_size_t));
 	if (ret != 0) {
 		LOG_ERR("Problem setting up DMA: %d", ret);
 		return ret;
 	}
 
-	adc_stm32_enable_dma_support(adc);
-
-	data->dma_error = 0;
-	ret = dma_start(data->dma.dma_dev, data->dma.channel);
-	if (ret != 0) {
-		LOG_ERR("Problem starting DMA: %d", ret);
-		return ret;
-	}
-
 	LOG_DBG("DMA started");
-
-	return ret;
+	return 0;
 }
 #endif /* CONFIG_ADC_STM32_DMA */
 
@@ -1652,6 +1650,11 @@ static int adc_stm32_init(const struct device *dev)
 	    !device_is_ready(data->dma.dma_dev)) {
 		LOG_ERR("%s device not ready", data->dma.dma_dev->name);
 		return -ENODEV;
+	}
+	err = adc_stm32_dma_init(dev);
+	if (err != 0) {
+		LOG_ERR("ADC DMA setup failed (%d)", err);
+		return err;
 	}
 #endif
 
